@@ -1,0 +1,17 @@
+[project]
+name = "predict-np-spot-prices"
+version = "0.1.0"
+description = "Predicts Nord Pool spot electricity prices."
+readme = "README.md"
+authors = [
+    { name = "Jari Ikonen", email = "87890204+jariikonen@users.noreply.github.com" }
+]
+requires-python = ">=3.13"
+dependencies = []
+
+[project.scripts]
+predict-np-spot-prices = "predict_np_spot_prices:main"
+
+[build-system]
+requires = ["uv_build>=0.9.7,<0.10.0"]
+build-backend = "uv_build"

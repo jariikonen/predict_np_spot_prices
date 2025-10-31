@@ -1,0 +1,1 @@
+Predicts Nord Pool spot electricity prices.
