@@ -7,7 +7,10 @@ authors = [
     { name = "Jari Ikonen", email = "87890204+jariikonen@users.noreply.github.com" }
 ]
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "entsoe-py>=0.7.8",
+    "streamlit>=1.51.0",
+]
 
 [project.scripts]
 predict-np-spot-prices = "predict_np_spot_prices:main"
@@ -15,3 +18,16 @@ predict-np-spot-prices = "predict_np_spot_prices:main"
 [build-system]
 requires = ["uv_build>=0.9.7,<0.10.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.3",
+]
+
+[tool.ruff]
+line-length = 80
+
+[tool.ruff.format]
+quote-style = "single"
+indent-style = "space"
+docstring-code-format = true
