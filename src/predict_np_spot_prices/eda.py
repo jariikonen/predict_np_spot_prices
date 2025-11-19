@@ -1,21 +1,18 @@
-import os
 from typing import List
 import pandas as pd
 from predict_np_spot_prices.common import (
-    DATA_DIR_EDA,
+    DATA_DIR_ARCHIVED,
+    DATA_DIR_PREPROCESSED,
     AreaValue,
-    DataItemValue,
+    DataCategoryValue,
     get_dfs,
     get_tuple_name_pairs,
     rename_tuple_columns,
 )
 
 
-DATA_DIR_ARCHIVED = os.path.join(DATA_DIR_EDA, 'archived')
-
-
 def get_archived_dfs(
-    data_item: DataItemValue,
+    data_item: DataCategoryValue,
     start: pd.Timestamp | None = None,
     end: pd.Timestamp | None = None,
     area_from: AreaValue | None = None,
@@ -25,16 +22,23 @@ def get_archived_dfs(
 
 
 def get_generation_df(area: AreaValue):
-    return get_dfs(DATA_DIR_EDA, 'generation', area_from=area)[0]
+    return get_dfs(DATA_DIR_PREPROCESSED, 'generation', area_from=area)[0]
 
 
 def process_to_generation_mix_df(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.drop(columns=['sum'])
+    df_mix = df.copy()
+    df_mix['sum'] = df_mix.sum(axis=1)
 
-    yearly_means = df.resample('YE').mean()
-    yearly_means['year'] = yearly_means.index.year
+    for col in df_mix.columns:
+        if col != 'sum':
+            df_mix[col] = df_mix[col] / df_mix['sum'] * 100
 
-    return yearly_means
+    df_mix = df_mix.drop(columns=['sum'])
+
+    df_mix = df_mix.resample('YE').mean()
+    df_mix['year'] = df_mix.index.year
+
+    return df_mix
 
 
 def get_generation_mix_df(area: AreaValue):

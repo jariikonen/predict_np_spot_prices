@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.scripts]
-predict-np-spot-prices = "predict_np_spot_prices:main"
+pnsp = "predict_np_spot_prices:main"
 
 [build-system]
 requires = ["uv_build>=0.9.7,<0.10.0"]

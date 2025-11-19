@@ -8,10 +8,19 @@ import pandas as pd
 
 
 DATA_DIR = 'data'
-DATA_DIR_EDA = os.path.join(DATA_DIR, 'eda')
+DATA_DIR_SPECIAL = os.path.join(DATA_DIR, 'special')
+DATA_DIR_ARCHIVED = os.path.join(DATA_DIR_SPECIAL, 'archived')
+DATA_DIR_PREPROCESSED = os.path.join(DATA_DIR, 'preprocessed')
+
+DF_FILE_EXTENSION = '.pqt'
 
 
-AreaValue: TypeAlias = Literal['FI', 'SE', 'SE_1', 'SE_3', 'NO', 'NO_4', 'EE']
+AreaValue: TypeAlias = Literal[
+    'FI', 'SE', 'SE_1', 'SE_3', 'NO', 'NO_4', 'EE', 'RU'
+]
+AreaValueCompact: TypeAlias = Literal[
+    'FI', 'SE', 'SE1', 'SE3', 'NO', 'NO4', 'EE', 'RU'
+]
 
 
 class Area(Enum):
@@ -23,6 +32,7 @@ class Area(Enum):
     NO_4 = 'NO_4'
     NO_TUPLE = 'NO_TUPLE'
     EE = 'EE'
+    RU = 'RU'
 
     @classmethod
     def list_values(cls) -> list[str]:
@@ -30,7 +40,7 @@ class Area(Enum):
 
     @classmethod
     def list_countries(cls) -> list[str]:
-        return ['FI', 'SE', 'NO', 'EE']
+        return ['FI', 'SE', 'NO', 'EE', 'RU']
 
     @classmethod
     def list_bidding_zones(cls) -> list[str]:
@@ -47,10 +57,23 @@ class Area(Enum):
             ('SE_1', 'FI'),
             ('FI', 'SE_3'),
             ('SE_3', 'FI'),
+            ('FI', 'EE'),
+            ('EE', 'FI'),
+        ]
+
+    @classmethod
+    def list_physical_flows(cls) -> list[tuple[str]]:
+        return [
+            ('FI', 'SE_1'),
+            ('SE_1', 'FI'),
+            ('FI', 'SE_3'),
+            ('SE_3', 'FI'),
             ('FI', 'NO_4'),
             ('NO_4', 'FI'),
             ('FI', 'EE'),
             ('EE', 'FI'),
+            ('FI', 'RU'),
+            ('RU', 'FI'),
         ]
 
     @classmethod
@@ -65,25 +88,63 @@ def get_area_code(area: AreaValue):
         raise ValueError(f'"{area}" is not an area code.')
 
 
-def get_country(area: AreaValue):
-    code = get_area_code(area)[:2]
-    if code == 'FI':
-        return 'Finland'
-    elif code == 'SE':
-        return 'Sweden'
-    elif code == 'NO':
-        return 'Norway'
-    elif code == 'EE':
-        return 'Estonia'
+def get_compact_form(area: AreaValue):
+    if area is None:
+        return None
+    if area == Area.SE_1.value:
+        return 'SE1'
+    elif area == Area.SE_3.value:
+        return 'SE3'
+    elif area == Area.NO_4.value:
+        return 'NO4'
+    elif Area.is_area_code(area):
+        return area
     else:
-        raise ValueError(f'No country for {area}.')
+        raise ValueError(f'"{area}" is not an area code.')
 
 
-class DataItem(Enum):
+def get_area_value_from_compact_form(area: AreaValueCompact):
+    if area == 'EE' or area == 'FI' or area == 'SE' or area == 'NO':
+        return area
+    elif area == 'NO4':
+        return 'NO_4'
+    elif area == 'SE1':
+        return 'SE_1'
+    elif area == 'SE3':
+        return 'SE_3'
+    else:
+        raise ValueError(f'Unknown compact form area value {area}.')
+
+
+def get_long_name(area: AreaValue):
+    if not Area.is_area_code(area):
+        raise ValueError(f'Not an area code {area}')
+
+    code = get_area_code(area)
+    country_code = code[:2]
+
+    if country_code == 'FI':
+        country = 'Finland'
+    elif country_code == 'SE':
+        country = 'Sweden'
+    elif country_code == 'NO':
+        country = 'Norway'
+    elif country_code == 'EE':
+        country = 'Estonia'
+
+    match = re.search(r'_(\d+)$', code)
+    if match:
+        return f'{country} {match.group(1)}'
+    else:
+        return country
+
+
+class DataCategory(Enum):
     GENERATION = 'generation'
     LOAD = 'load'
     PRICES = 'prices'
     EXCHANGES = 'exchanges'
+    FLOWS = 'flows'
     WATER_RESERVOIRS = 'water_reservoirs'
 
     @classmethod
@@ -95,46 +156,50 @@ class DataItem(Enum):
         return [member.value for member in cls]
 
     @classmethod
-    def is_data_item(cls, data_item: str) -> bool:
-        return str.lower(data_item) in cls
+    def is_data_category(cls, data_category: str) -> bool:
+        return str.lower(data_category) in cls
 
 
-DataItemValue: TypeAlias = Literal[
-    'generation', 'load', 'pricces', 'exchanges', 'water_reservoirs'
+DataCategoryValue: TypeAlias = Literal[
+    'generation',
+    'load',
+    'prices',
+    'exchanges',
+    'flows',
+    'water_reservoirs',
 ]
 
 
-def get_filename_start(data_item: DataItemValue) -> str:
-    if data_item == DataItem.PRICES.value:
+def get_filename_start(data_category: DataCategoryValue) -> str:
+    if data_category == DataCategory.PRICES.value:
         return 'prices'
-    if data_item == DataItem.LOAD.value:
+    if data_category == DataCategory.LOAD.value:
         return 'load'
-    elif data_item == DataItem.GENERATION.value:
+    elif data_category == DataCategory.GENERATION.value:
         return 'generation_per_prod_type'
-    elif data_item == DataItem.WATER_RESERVOIRS.value:
+    elif data_category == DataCategory.WATER_RESERVOIRS.value:
         return 'water_reservoirs_and_hydro_storage'
-    elif data_item == DataItem.EXCHANGES.value:
+    elif data_category == DataCategory.EXCHANGES.value:
         return 'scheduled_exchanges'
+    elif data_category == DataCategory.FLOWS.value:
+        return 'physical_flows'
     else:
-        raise ValueError(f'No filename start for {data_item}')
+        raise ValueError(f'No filename start for {data_category}')
 
 
 def get_filename_start_with_areas(
-    data_item: DataItemValue,
+    data_category: DataCategoryValue,
     area_from: AreaValue,
     area_to: AreaValue | None = None,
 ) -> str:
-    """
-    Creates the filename start with the area codes followed by an underscore
-    and number 2, which is the first character of date range (to separate,
-    e.g., SE from SE_1).
-    """
-    if data_item == DataItem.EXCHANGES.value:
-        if area_to is None:
-            raise ValueError('DataItem.EXCHANGES needs two area codes.')
-        return f'{get_filename_start(data_item)}_{area_from}-{area_to}_2'
+    if area_from is None and area_to is None:
+        return get_filename_start(data_category)
+    area_f = get_compact_form(area_from)
+    area_t = get_compact_form(area_to)
+    if area_to is not None:
+        return f'{get_filename_start(data_category)}_{area_f}-{area_t}'
     else:
-        return f'{get_filename_start(data_item)}_{area_from}_2'
+        return f'{get_filename_start(data_category)}_{area_f}'
 
 
 def set_utc(ts: pd.Timestamp) -> pd.Timestamp:
@@ -209,10 +274,12 @@ def create_df_filename(
     area_from: AreaValue | None = None,
     area_to: AreaValue | None = None,
 ):
+    area_f = get_compact_form(area_from) if area_from is not None else None
+    area_t = get_compact_form(area_to) if area_to is not None else None
     if area_from is not None and area_to is not None:
-        return f'{name_start}_{area_from}-{area_to}_{date_to_str(start)}--{date_to_str(end)}.pqt'
+        return f'{name_start}_{area_f}-{area_t}_{date_to_str(start)}--{date_to_str(end)}{DF_FILE_EXTENSION}'
     elif area_to is None:
-        return f'{name_start}_{area_from}_{date_to_str(start)}--{date_to_str(end)}.pqt'
+        return f'{name_start}_{area_f}_{date_to_str(start)}--{date_to_str(end)}{DF_FILE_EXTENSION}'
     else:
         raise ValueError(
             'Argument area or arguments area_from and area_to must not be None.'
@@ -230,8 +297,8 @@ def get_areas_from_filename(filename: str) -> List[str]:
     """
     match = re.match(pattern, filename, re.VERBOSE)
     if match:
-        codes = match.group('codes')
-        return codes.split('-')
+        codes = match.group('codes').split('-')
+        return [get_area_value_from_compact_form(c) for c in codes]
     return []
 
 
@@ -244,6 +311,27 @@ def get_date_range_from_filename(
         return None
     start_str, end_str = match.group(0).split('--')
     return pd.Timestamp(start_str), pd.Timestamp(end_str)
+
+
+def get_filename_start_from_filename(filename: str) -> str:
+    pattern = re.compile(
+        r"""
+        ^
+        (?P<start>[a-z_]+)                      # start: lowercase + underscores
+        _
+        (?P<code>[A-Z0-9_]+(?:-[A-Z0-9_]+)?)    # code or code-code
+        _
+        \d{4}-\d{2}-\d{2}--\d{4}-\d{2}-\d{2}    # date range
+        \.[^.]+                                 # suffix
+        $
+        """,
+        re.VERBOSE,
+    )
+
+    m = pattern.match(filename)
+    if not m:
+        return None
+    return m.group('start'), m.group('code')
 
 
 def change_area_codes(filename: str, new_codes: str | list[str]) -> str:
@@ -314,34 +402,39 @@ def get_df_files(
     files = [
         f
         for f in os.listdir(dir_path)
-        if f.startswith(filename_start) and f.endswith('.pqt')
+        if f.startswith(filename_start) and f.endswith(DF_FILE_EXTENSION)
     ]
     return files
 
 
 def get_dfs(
     dir_path: str,
-    data_item: DataItemValue,
+    data_category: DataCategoryValue,
     start: pd.Timestamp | None = None,
     end: pd.Timestamp | None = None,
     area_from: AreaValue | None = None,
     area_to: AreaValue | None = None,
 ):
-    filename_start = get_filename_start(data_item)
+    filename_start = get_filename_start(data_category)
     if area_from is not None and area_to is not None:
         filename_start += (
-            f'_{get_area_code(area_from)}-{get_area_code(area_to)}'
+            f'_{get_compact_form(area_from)}-{get_compact_form(area_to)}'
         )
     elif area_from is not None:
-        filename_start += f'_{get_area_code(area_from)}'
+        filename_start += f'_{get_compact_form(area_from)}'
         if area_to is not None:
-            filename_start += f'-{get_area_code(area_to)}'
+            filename_start += f'-{get_compact_form(area_to)}'
     if start is not None and end is not None:
         filename_start += f'{date_to_str(start)}--{date_to_str(end)}'
 
+    # add underscore to separate, e.g., SE from SE1
+    filename_start += '_'
+
     files = get_df_files(dir_path, filename_start)
     if len(files) == 0:
-        raise ValueError(f'No matching .pqt files in directory "{dir_path}".')
+        raise ValueError(
+            f'No matching {DF_FILE_EXTENSION} files in directory "{dir_path}" ({filename_start}).'
+        )
 
     dfs: List[pd.DataFrame] = []
     for f in files:
@@ -384,3 +477,21 @@ def print_df_data(df: pd.DataFrame):
 
 def get_next_hour(ts: pd.Timestamp) -> pd.Timestamp:
     return (ts + pd.Timedelta(nanoseconds=1)).ceil('h')
+
+
+def prompt_yes_no(prompt='Continue? (y/n): '):
+    while True:
+        ans = input(prompt).strip().lower()
+        if ans in ('y', 'yes'):
+            return True
+        if ans in ('n', 'no'):
+            return False
+        print('Please enter yes or no (y/n).')
+
+
+def write_df(df: pd.DataFrame, file_path: str):
+    df.to_parquet(file_path)
+
+
+def read_df(file_path: str) -> pd.DataFrame:
+    return pd.read_parquet(file_path)

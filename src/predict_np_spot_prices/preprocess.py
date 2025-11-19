@@ -1,16 +1,21 @@
 import os
-from typing import List
+import sys
+from typing import List, Tuple, TypeAlias, Literal
 import pandas as pd
 from predict_np_spot_prices.common import (
     DATA_DIR,
-    DATA_DIR_EDA,
-    DataItem,
+    DATA_DIR_SPECIAL,
+    DATA_DIR_PREPROCESSED,
+    DF_FILE_EXTENSION,
+    DataCategory,
     Freq,
     change_area_codes,
     get_filename_start,
+    get_filename_start_with_areas,
     get_tuple_name_pairs,
+    read_df,
     rename_tuple_columns,
-    set_utc,
+    write_df,
 )
 
 
@@ -76,17 +81,73 @@ def drop_empty_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def preprocess_tuple_columns(df: pd.DataFrame) -> pd.DataFrame:
+MergeMethod: TypeAlias = Literal[
+    'first',
+    'last',
+    'average',
+]
+
+
+def merge_columns(
+    df: pd.DataFrame, columns: Tuple[str, str], method: MergeMethod = 'first'
+) -> pd.Series:
+    """
+    Merge multiple columns into one continuous series.
+
+    Args:
+        df (pd.DataFrame): DataFrame containing the columns to merge.
+        columns (List[str]): List of columns to merge.
+        method (str, default 'first'): Method for resolving overlaps.
+            Methods: 'first' - take the first column's value, 'last' - take
+            the last column's value, 'average' - take the mean of overlapping
+            values.
+
+    Returns:
+        pd.Series : merged continuous series
+    """
+    if len(columns) < 2:
+        return df[columns[0]].copy()
+
+    # Detect overlaps: more than one non-NaN value per row
+    overlap_mask = df[[columns[0], columns[1]]].notna().sum(axis=1) > 1
+    if overlap_mask.any():
+        ident = df.attrs.get('name', f'id={id(df)}')
+        print(
+            f'Warning: Overlaps detected in dataframe {ident} at the following indices:'
+        )
+        print(df.index[overlap_mask])
+
+    if method == 'first':
+        merged = df[columns[0]].copy()
+        merged = merged.combine_first(df[columns[1]])
+    elif method == 'last':
+        merged = df[columns[1]].copy()
+        merged = merged.combine_first(df[columns[0]])
+    elif method == 'average':
+        merged = df[[columns[0], columns[1]]].mean(axis=1, skipna=True)
+    else:
+        raise ValueError('method must be one of "first", "last", or "average"')
+
+    return merged
+
+
+def merge_tuple_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Preprocesses a dataframe with multi-level columns flattened to single-level
+    columns with tuple-like strings as names, by merging them to their simply
+    named counterparts.
+
+    This happens by creating a new merged column where the values from the
+    simply named column and its tuple-like counterpart are merged using
+    pd.DataFrame.combine_first function. After merging, the original columns
+    are dropped. Any remaining tuple named columns are also dropped.
+    """
     df_new = rename_tuple_columns(df)
     pairs, tuple_columns = get_tuple_name_pairs(df_new)
     for p in pairs:
         tuple_col, simple_col = p
-        cutoff = set_utc(pd.Timestamp('2025-01-01'))
         if 'Aggregate' in tuple_col:
-            merged = df_new[simple_col].copy()
-            merged.loc[df_new.index >= cutoff] = df_new.loc[
-                df_new.index >= cutoff, tuple_col
-            ]
+            merged = merge_columns(df_new, p, method='first')
             df_new['merged'] = merged
             df_new = df_new.drop(columns=[tuple_col, simple_col])
             df_new = df_new.rename(columns={'merged': simple_col})
@@ -95,7 +156,12 @@ def preprocess_tuple_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df_new
 
 
-def preprocess_multi_level_columns(df: pd.DataFrame) -> pd.DataFrame:
+def flatten_multi_level_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Preprocesses a NO and NO_4 generation dataframe with multi-level columns
+    by converting the multi-level columns to single-level columns and removing
+    the consumption columns.
+    """
     df_new = df.copy()
     df_new.columns = df_new.columns.to_flat_index()
     df_new.columns = [f'{c[0]} ({c[1]})' for c in df_new.columns]
@@ -111,47 +177,96 @@ def preprocess_multi_level_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df_new
 
 
-def preprocess_generation(
-    df: pd.DataFrame, handle_tuple_columns: bool = True
+def preprocess_generation_df(
+    df: pd.DataFrame,
+    handle_tuple_columns: bool = True,
 ) -> pd.DataFrame:
     df_hourly = df.resample('h').mean()
-    df_hourly = df_hourly.fillna(0)
-    df_hourly = drop_empty_columns(df_hourly)
 
     if handle_tuple_columns:
         if isinstance(df_hourly.columns, pd.core.indexes.multi.MultiIndex):
-            df_hourly = preprocess_multi_level_columns(df_hourly)
+            df_hourly = flatten_multi_level_columns(df_hourly)
         else:
-            df_hourly = preprocess_tuple_columns(df_hourly)
+            df_hourly = merge_tuple_columns(df_hourly)
+
+    df_hourly = df_hourly.fillna(0)
+    df_hourly = drop_empty_columns(df_hourly)
 
     return df_hourly
 
 
-def preprocess_generation_eda(
-    df: pd.DataFrame, handle_tuple_columns: bool = True
+def preprocess_generation(
+    dir_from: str,
+    dir_to: str,
+    handle_tuple_columns: bool = True,
+    prefix: str = 'pp',
 ) -> pd.DataFrame:
-    df_pp = preprocess_generation(df, handle_tuple_columns)
-    df_pp['sum'] = df_pp.sum(axis=1)
-
-    for col in df_pp.columns:
-        if col != 'sum':
-            df_pp[col] = df_pp[col] / df_pp['sum'] * 100
-
-    return df_pp
-
-
-def preprocess(eda: bool = False):
-    if eda:
-        return preprocess_eda()
-    else:
-        raise NotImplementedError(
-            'Normal preprocessing is not yet implemented.'
+    filename_start = get_filename_start(DataCategory.GENERATION.value)
+    files = [
+        f
+        for f in os.listdir(dir_from)
+        if f.startswith(filename_start) and f.endswith(DF_FILE_EXTENSION)
+    ]
+    if len(files) == 0:
+        raise ValueError(
+            f'No matching {DF_FILE_EXTENSION} files in directory {dir_from}.'
         )
+
+    for f in files:
+        print(f'found file: {f}')
+        file_path = os.path.join(dir_from, f)
+        df = read_df(file_path)
+        df = preprocess_generation_df(df, handle_tuple_columns)
+        validate_datetime_index(df, Freq.HOUR)
+        save_df(df, dir_to, f, prefix)
+
+
+def preprocess_generation_special(
+    dir_from: str,
+    dir_to: str,
+):
+    filename_start = (
+        get_filename_start_with_areas(DataCategory.GENERATION.value, 'NO') + '_'
+    )
+    files = [
+        f
+        for f in os.listdir(dir_from)
+        if f.startswith(filename_start) and f.endswith(DF_FILE_EXTENSION)
+    ]
+    if len(files) == 0:
+        raise ValueError(
+            f'No matching {DF_FILE_EXTENSION} files in directory {dir_from}.'
+        )
+
+    for f in files:
+        df = read_df(os.path.join(dir_from, f))
+        df_pp = preprocess_generation_df(df, handle_tuple_columns=False)
+        validate_datetime_index(df_pp, Freq.HOUR)
+        save_df(df_pp, dir_to, f, 'pp_special', 'NO_TUPLE')
+
+
+def preprocess(
+    special: bool = False,
+    dir_from: str | None = DATA_DIR,
+    dir_to: str | None = DATA_DIR_PREPROCESSED,
+):
+    if special:
+        preprocess_special()
+        sys.exit(0)
+
+    preprocess_generation(dir_from, dir_to, True)
+
+
+def preprocess_special(
+    dir_from: str | None = DATA_DIR,
+    dir_to: str | None = DATA_DIR_SPECIAL,
+):
+    preprocess_generation_special(dir_from, dir_to)
 
 
 def save_df(
     df: pd.DataFrame,
-    dir_name: str,
+    dir_path: str,
     filename: str,
     prefix: str | None = None,
     new_areas: str | List[str] | None = None,
@@ -164,46 +279,22 @@ def save_df(
 
     Args:
         df (pd.DataFrame): Dataframe to be saved.
-        dir_name (str): Name of the directory where the file is saved.
+        dir_path (str): Path to the directory where the file is saved.
         filename (str): Name of the file.
         prefix (str | None): A prefix added to the filename when used as a
             "name" attribute.
         new_areas (str | List(str) | None): New area code(s) used in the
             filename if provided.
     """
+    os.makedirs(dir_path, exist_ok=True)
+
     if new_areas is not None:
         filename = change_area_codes(filename, new_areas)
 
     base, _ = os.path.splitext(filename)
-    df.attrs['name'] = f'{prefix}_{base}'
+    prefix_part = f'{prefix}_' if prefix is not None else ''
+    df.attrs['name'] = f'{prefix_part}{base}'
 
-    file_path = os.path.join(dir_name, filename)
-    df.to_parquet(file_path)
+    file_path = os.path.join(dir_path, filename)
+    write_df(df, file_path)
     print(f'preprocessed dataframe written to {file_path}')
-
-
-def preprocess_eda():
-    filename_start = get_filename_start(DataItem.GENERATION.value)
-    from_dir = DATA_DIR
-    files = [
-        f
-        for f in os.listdir(from_dir)
-        if f.startswith(filename_start) and f.endswith('.pqt')
-    ]
-    if len(files) == 0:
-        raise ValueError(f'No matching .pqt files in directory "{from_dir}".')
-
-    to_dir = DATA_DIR_EDA
-    for f in files:
-        print(f'found file: {f}')
-        df = pd.read_parquet(os.path.join(DATA_DIR, f))
-        if 'NO' in f and not isinstance(
-            df.columns, pd.core.indexes.multi.MultiIndex
-        ):
-            df = preprocess_generation_eda(df, False)
-            validate_datetime_index(df, Freq.HOUR)
-            save_df(df, to_dir, f, 'pp_eda', 'NO_TUPLE')
-            df = pd.read_parquet(os.path.join(DATA_DIR, f))
-        df = preprocess_generation_eda(df)
-        validate_datetime_index(df, Freq.HOUR)
-        save_df(df, to_dir, f, 'pp_eda')
