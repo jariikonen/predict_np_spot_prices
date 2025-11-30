@@ -5,10 +5,14 @@ The goal of the project was to analyze the formation of Finnish electricity spot
 
 ## Usage
 
-### Install uv and activate environment
+### Sync uv and activate virtual environment
 
 You need to have [uv](https://docs.astral.sh/uv/getting-started/installation/#installation-methods) installed. After that
-navigate to the project directory and activate the virtual environment:
+run
+```
+uv sync
+```
+and navigate to the project directory. Activate the virtual environment by sourcing `.venv/bin/activate`:
 
 ```
 . .venv/bin/activate
