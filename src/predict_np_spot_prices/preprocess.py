@@ -1,9 +1,11 @@
 import os
+from pathlib import Path
 import sys
-from typing import List, Tuple, TypeAlias, Literal
+from typing import Callable, List, Tuple, TypeAlias, Literal
 import pandas as pd
 from predict_np_spot_prices.common import (
-    DATA_DIR,
+    DATA_DIR_ENTSOE,
+    DATA_DIR_FMI,
     DATA_DIR_SPECIAL,
     DATA_DIR_PREPROCESSED,
     DF_FILE_EXTENSION,
@@ -39,7 +41,11 @@ def validate_datetime_index(
 
     # check that the resolution is correct
     inferred_freq = pd.infer_freq(df.index)
-    if freq.value is not None and inferred_freq != freq.value:
+    if (
+        freq is not None
+        and freq.value is not None
+        and inferred_freq != freq.value
+    ):
         raise ValueError(
             f'Expected freq {freq}, got {inferred_freq} for DataFrame "{ident}".'
         )
@@ -131,11 +137,11 @@ def merge_columns(
     return merged
 
 
-def merge_tuple_columns(df: pd.DataFrame) -> pd.DataFrame:
+def merge_tuple_generation_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Preprocesses a dataframe with multi-level columns flattened to single-level
-    columns with tuple-like strings as names, by merging them to their simply
-    named counterparts.
+    Preprocesses a generation data dataframe with multi-level columns flattened
+    to single-level columns with tuple-like strings as names, by merging them
+    to their simply named counterparts.
 
     This happens by creating a new merged column where the values from the
     simply named column and its tuple-like counterpart are merged using
@@ -156,17 +162,14 @@ def merge_tuple_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df_new
 
 
-def flatten_multi_level_columns(df: pd.DataFrame) -> pd.DataFrame:
+def flatten_multi_level_generation_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Preprocesses a NO and NO_4 generation dataframe with multi-level columns
-    by converting the multi-level columns to single-level columns and removing
-    the consumption columns.
+    Preprocesses a generation data dataframe with multi-level columns by
+    converting the multi-level columns to single-level columns.
     """
     df_new = df.copy()
     df_new.columns = df_new.columns.to_flat_index()
     df_new.columns = [f'{c[0]} ({c[1]})' for c in df_new.columns]
-    consumption_columns = [c for c in df_new.columns if 'Consumption' in c]
-    df_new.drop(columns=consumption_columns)
     df_new = df_new.rename(
         columns={
             c: c.replace(' (Actual Aggregated)', '')
@@ -177,6 +180,44 @@ def flatten_multi_level_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df_new
 
 
+def get_rows_with_missing_values(df: pd.DataFrame) -> pd.DataFrame:
+    return df[df.isnull().any(axis=1)]
+
+
+def get_rows_with_str_values(df: pd.DataFrame) -> pd.DataFrame:
+    return df[df.map(lambda x: isinstance(x, str)).any(axis=1)]
+
+
+def preprocess_prices_df(
+    df: pd.DataFrame,
+) -> pd.DataFrame:
+    df_hourly = df.resample('h').mean()
+    missing = get_rows_with_missing_values(df_hourly)
+    df_hourly = df_hourly.fillna(0)
+    if len(missing) > 0:
+        raise Exception('Missing values')
+    df_hourly = drop_empty_columns(df_hourly)
+
+    # prices from ENTSO-E are "day-ahead", so they must be aligned to the
+    # actual consumption day
+    df_hourly.index = df_hourly.index + pd.Timedelta(days=1)
+
+    return df_hourly
+
+
+def preprocess_load_df(
+    df: pd.DataFrame,
+) -> pd.DataFrame:
+    df_hourly = df.resample('h').mean()
+    df_hourly = df_hourly.fillna(0)
+    missing = get_rows_with_missing_values(df_hourly)
+    if len(missing) > 0:
+        raise Exception(f'Missing values ({len(missing)})')
+    df_hourly = drop_empty_columns(df_hourly)
+
+    return df_hourly
+
+
 def preprocess_generation_df(
     df: pd.DataFrame,
     handle_tuple_columns: bool = True,
@@ -185,40 +226,48 @@ def preprocess_generation_df(
 
     if handle_tuple_columns:
         if isinstance(df_hourly.columns, pd.core.indexes.multi.MultiIndex):
-            df_hourly = flatten_multi_level_columns(df_hourly)
+            df_hourly = flatten_multi_level_generation_columns(df_hourly)
         else:
-            df_hourly = merge_tuple_columns(df_hourly)
+            df_hourly = merge_tuple_generation_columns(df_hourly)
+
+    # drop consumption columns
+    consumption_columns = [c for c in df_hourly.columns if 'Consumption' in c]
+    df_hourly.drop(columns=consumption_columns)
 
     df_hourly = df_hourly.fillna(0)
+    missing = get_rows_with_missing_values(df_hourly)
+    if len(missing) > 0:
+        raise Exception(f'Missing values ({len(missing)})')
+
     df_hourly = drop_empty_columns(df_hourly)
 
     return df_hourly
 
 
-def preprocess_generation(
-    dir_from: str,
-    dir_to: str,
-    handle_tuple_columns: bool = True,
-    prefix: str = 'pp',
+def preprocess_flows_df(
+    df: pd.DataFrame,
 ) -> pd.DataFrame:
-    filename_start = get_filename_start(DataCategory.GENERATION.value)
-    files = [
-        f
-        for f in os.listdir(dir_from)
-        if f.startswith(filename_start) and f.endswith(DF_FILE_EXTENSION)
-    ]
-    if len(files) == 0:
-        raise ValueError(
-            f'No matching {DF_FILE_EXTENSION} files in directory {dir_from}.'
-        )
+    df_hourly = df.resample('h').mean()
+    df_hourly = df_hourly.fillna(0)
+    missing = get_rows_with_missing_values(df_hourly)
+    if len(missing) > 0:
+        raise Exception(f'Missing values {len(missing)}')
+    df_hourly = drop_empty_columns(df_hourly)
 
-    for f in files:
-        print(f'found file: {f}')
-        file_path = os.path.join(dir_from, f)
-        df = read_df(file_path)
-        df = preprocess_generation_df(df, handle_tuple_columns)
-        validate_datetime_index(df, Freq.HOUR)
-        save_df(df, dir_to, f, prefix)
+    return df_hourly
+
+
+def preprocess_exchanges_df(
+    df: pd.DataFrame,
+) -> pd.DataFrame:
+    df_hourly = df.resample('h').mean()
+    df_hourly = df_hourly.fillna(0)
+    missing = get_rows_with_missing_values(df_hourly)
+    if len(missing) > 0:
+        raise Exception(f'Missing values ({len(missing)})')
+    df_hourly = drop_empty_columns(df_hourly)
+
+    return df_hourly
 
 
 def preprocess_generation_special(
@@ -245,22 +294,175 @@ def preprocess_generation_special(
         save_df(df_pp, dir_to, f, 'pp_special', 'NO_TUPLE')
 
 
+def weather_create_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
+    df_pp = df.copy()
+    df_pp['datetime'] = pd.to_datetime(
+        df_pp['Vuosi'].astype(str)
+        + '-'
+        + df_pp['Kuukausi'].astype(str)
+        + '-'
+        + df_pp['Päivä'].astype(str)
+        + ' '
+        + df_pp['Aika [UTC]'],
+        utc=True,
+    )
+    df_pp = df_pp.drop(columns=['Vuosi', 'Kuukausi', 'Päivä', 'Aika [UTC]'])
+    df_pp = df_pp.rename(columns={'datetime': 'time'})
+    df_pp = df_pp.set_index('time')
+    df_pp = df_pp.asfreq('h')
+    return df_pp
+
+
+def print_missing_dates(df: pd.DataFrame):
+    full_range = pd.date_range(
+        start=df.index.min(), end=df.index.max(), freq='h'
+    )
+    missing = full_range.difference(df.index)
+    print(missing)
+
+
+def weather_common_preprocessing(df: pd.DataFrame) -> pd.DataFrame:
+    df_pp = weather_create_datetime_index(df)
+    return df_pp
+
+
+def preprocess_temperature(df: pd.DataFrame) -> pd.DataFrame:
+    df_pp = weather_common_preprocessing(df)
+    station = df_pp['Havaintoasema'].dropna().iloc[0]
+    df_pp = df_pp.rename(columns={'Lämpötilan keskiarvo [°C]': station})
+    df_pp = df_pp.drop(columns=['Havaintoasema'])
+    df_pp[station] = df_pp[station].interpolate(method='time')
+    missing = get_rows_with_missing_values(df_pp)
+    if len(missing) > 0:
+        raise Exception(
+            f'Filling missing values failed [{", ".join(missing)}].'
+        )
+    return df_pp
+
+
+def preprocess_wind(df: pd.DataFrame) -> pd.DataFrame:
+    df_pp = weather_common_preprocessing(df)
+    station = df_pp['Havaintoasema'].dropna().iloc[0]
+    avg_speed = f'{station}_avg_speed'
+    df_pp = df_pp.rename(
+        columns={
+            'Keskituulen nopeus [m/s]': avg_speed,
+        }
+    )
+    df_pp = df_pp.drop(
+        columns=['Havaintoasema', 'Tuulen suunnan keskiarvo [°]']
+    )
+
+    df_pp = df_pp.apply(pd.to_numeric, errors='coerce')
+
+    pd.set_option('future.no_silent_downcasting', True)
+    df_pp[avg_speed] = df_pp[avg_speed].ffill().bfill()
+    missing = get_rows_with_missing_values(df_pp)
+    if len(missing) > 0:
+        raise Exception(
+            f'Filling missing values failed [{", ".join(missing)}].'
+        )
+    return df_pp
+
+
 def preprocess(
     special: bool = False,
-    dir_from: str | None = DATA_DIR,
+    dir_from: str | None = None,
     dir_to: str | None = DATA_DIR_PREPROCESSED,
 ):
+    dir_from_entsoe = dir_from if dir_from is not None else DATA_DIR_ENTSOE
+    dir_from_fmi = dir_from if dir_from is not None else DATA_DIR_FMI
+
     if special:
-        preprocess_special()
+        preprocess_special(dir_from_entsoe, DATA_DIR_SPECIAL)
         sys.exit(0)
 
-    preprocess_generation(dir_from, dir_to, True)
+    preprocess_entsoe(dir_from_entsoe, dir_to)
+    preprocess_fmi(dir_from_fmi, dir_to)
 
 
-def preprocess_special(
-    dir_from: str | None = DATA_DIR,
-    dir_to: str | None = DATA_DIR_SPECIAL,
+def preprocess_entsoe(
+    dir_from: str,
+    dir_to: str,
 ):
+    for dcategory in ['prices', 'load', 'generation', 'exchanges', 'flows']:
+        filename_start = get_filename_start(dcategory)
+        files = [
+            f
+            for f in os.listdir(dir_from)
+            if f.startswith(filename_start) and f.endswith(DF_FILE_EXTENSION)
+        ]
+        if len(files) == 0:
+            raise ValueError(
+                f'No matching {DF_FILE_EXTENSION} files in directory {dir_from}.'
+            )
+
+        for f in files:
+            print(f'found file: {f}')
+            file_path = os.path.join(dir_from, f)
+            df = read_df(file_path)
+
+            if dcategory == DataCategory.PRICES.value:
+                df = preprocess_prices_df(df)
+            elif dcategory == DataCategory.LOAD.value:
+                df = preprocess_load_df(df)
+            elif dcategory == DataCategory.GENERATION.value:
+                df = preprocess_generation_df(df, handle_tuple_columns=True)
+            elif dcategory == DataCategory.EXCHANGES.value:
+                df = preprocess_exchanges_df(df)
+            elif dcategory == DataCategory.FLOWS.value:
+                df = preprocess_flows_df(df)
+
+            validate_datetime_index(df, Freq.HOUR)
+            save_df(df, dir_to, f)
+
+
+def preprocess_fmi(dir_from: str, dir_to: str):
+    def read_and_preprocess(
+        file_path: str,
+        filename: str,
+        preprocessing_func: Callable[[pd.DataFrame], pd.DataFrame],
+    ):
+        print(f'found file: {filename}')
+        df = pd.read_csv(file_path)
+        df = preprocessing_func(df)
+        validate_datetime_index(df, Freq.HOUR)
+        return df
+
+    temperature_dir = os.path.join(dir_from, 'temperature')
+    temperature_files = [
+        f for f in os.listdir(temperature_dir) if f.endswith('.csv')
+    ]
+    temperature_dfs = []
+    for f in temperature_files:
+        file_path = os.path.join(temperature_dir, f)
+        temperature_dfs.append(
+            read_and_preprocess(file_path, f, preprocess_temperature)
+        )
+    df_pp = pd.concat(temperature_dfs, axis=1)
+    df_pp['temperature_mean'] = df_pp.mean(axis=1)
+    df_pp = df_pp[['temperature_mean']]
+    range_start = pd.Timestamp(df_pp.iloc[0].name).strftime('%Y-%m-%d')
+    range_end = pd.Timestamp(df_pp.iloc[-1].name).strftime('%Y-%m-%d')
+    filename = f'temperature_mean_{range_start}-{range_end}'
+    save_df(df_pp, dir_to, filename)
+
+    wind_dir = os.path.join(dir_from, 'wind')
+    wind_files = [f for f in os.listdir(wind_dir) if f.endswith('.csv')]
+    wind_dfs = []
+    for f in wind_files:
+        file_path = os.path.join(wind_dir, f)
+        wind_dfs.append(read_and_preprocess(file_path, f, preprocess_wind))
+    df_pp = pd.concat(wind_dfs, axis=1)
+    df_pp['avg_speed'] = df_pp.mean(axis=1)
+    df_pp = df_pp[['avg_speed']]
+    range_start = pd.Timestamp(df_pp.iloc[0].name).strftime('%Y-%m-%d')
+    range_end = pd.Timestamp(df_pp.iloc[-1].name).strftime('%Y-%m-%d')
+    filename = f'wind_mean_{range_start}-{range_end}'
+    save_df(df_pp, dir_to, filename)
+
+
+def preprocess_special(dir_from: str, dir_to: str):
     preprocess_generation_special(dir_from, dir_to)
 
 
@@ -294,6 +496,10 @@ def save_df(
     base, _ = os.path.splitext(filename)
     prefix_part = f'{prefix}_' if prefix is not None else ''
     df.attrs['name'] = f'{prefix_part}{base}'
+
+    filename = Path(filename)
+    if not filename.suffix == DF_FILE_EXTENSION:
+        filename = filename.with_suffix(DF_FILE_EXTENSION)
 
     file_path = os.path.join(dir_path, filename)
     write_df(df, file_path)

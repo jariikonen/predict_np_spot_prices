@@ -3,7 +3,6 @@ import os
 import sys
 import traceback
 from predict_np_spot_prices.common import (
-    DATA_DIR,
     DATA_DIR_PREPROCESSED,
     DATA_DIR_SPECIAL,
     DataCategory,
@@ -30,6 +29,8 @@ def check_args(args: argparse.Namespace):
     remove = arg_dict.get('remove', None)
     dir_from = arg_dict.get('dir_from', None)
     dir_to = arg_dict.get('dir_to', None)
+    head = arg_dict.get('head', None)
+    tail = arg_dict.get('tail', None)
 
     if data_category is not None:
         if not DataCategory.is_data_category(data_category):
@@ -42,16 +43,12 @@ def check_args(args: argparse.Namespace):
         area_from = get_area_code(area_from)
     if area_to is not None:
         area_to = get_area_code(area_to)
-    if dir is None:
-        dir = DATA_DIR
     if keep and remove:
         raise ValueError(
             'Cannot use both --keep and --remove options simultaneously.'
         )
     if remove is None:
         keep = False
-    if dir_from is None:
-        dir_from = DATA_DIR
 
     return {
         'command': command,
@@ -66,6 +63,8 @@ def check_args(args: argparse.Namespace):
         'remove': remove,
         'dir_from': dir_from,
         'dir_to': dir_to,
+        'head': head,
+        'tail': tail,
     }
 
 
@@ -77,7 +76,7 @@ def main() -> None:
         prog='predict-np-spot-prices',
     )
 
-    commands = ['fetch', 'update', 'show', 'preprocess', 'run_app']
+    commands = ['fetch', 'update', 'show', 'preprocess', 'run_app', 'weather']
     subparsers = parser.add_subparsers(
         help=f'Command to execute ({", ".join(commands)}).'
     )
@@ -102,7 +101,7 @@ def main() -> None:
             dest='area_from',
         )
         p.add_argument(
-            '-t', '--area_to', '-at', type=str, required=False, dest='area_to'
+            '--area_to', '-at', type=str, required=False, dest='area_to'
         )
         p.add_argument('-d', '--dir', type=str, required=False)
 
@@ -157,6 +156,20 @@ def main() -> None:
         'columns with tuple-like names, that need to be dealt with in the data '
         'cleaning process. These dataframes have been preprocessed using the '
         '--special flag.',
+    )
+    parser_show.add_argument(
+        '-he',
+        '--head',
+        type=int,
+        help='Number of rows to be outputted with head().',
+        default=5,
+    )
+    parser_show.add_argument(
+        '-t',
+        '--tail',
+        type=int,
+        help='Number of rows to be outputted with tail().',
+        default=5,
     )
 
     # preprocess
@@ -216,6 +229,8 @@ def main() -> None:
                 arg_dict['area_from'],
                 arg_dict['area_to'],
                 arg_dict['dir'],
+                arg_dict['head'],
+                arg_dict['tail'],
             )
         elif args.command == 'preprocess':
             if arg_dict['special'] and arg_dict['dir_to'] is None:
@@ -257,6 +272,7 @@ def main() -> None:
 
                 proc.wait()  # ensure the process has fully terminated
                 print('Streamlit stopped.')
+
     except KeyboardInterrupt:
         print('\nKeyboardInterrupt detected. Exiting...')
         sys.exit(1)

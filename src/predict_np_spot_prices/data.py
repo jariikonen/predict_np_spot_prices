@@ -4,7 +4,7 @@ import sys
 from typing import List, TypeAlias
 from collections.abc import Callable
 from predict_np_spot_prices.common import (
-    DATA_DIR,
+    DATA_DIR_ENTSOE,
     DF_FILE_EXTENSION,
     Area,
     AreaValue,
@@ -65,11 +65,13 @@ def fetch_data(
     end: pd.Timestamp | None = None,
     area_from: AreaValue | None = None,
     area_to: AreaValue | None = None,
-    dir_path: str = DATA_DIR,
+    dir_path: str | None = None,
     return_df: bool = False,
     no_update: bool = False,
     keep: bool | None = None,
 ) -> pd.DataFrame:
+    dir_path = dir_path if dir_path is not None else DATA_DIR_ENTSOE
+
     def fetch_and_save_df(area):
         df = pd.DataFrame()
         if isinstance(area, tuple):
@@ -105,7 +107,9 @@ def fetch_data(
                 )
                 print(f'data stored to file {filepath}\n')
             else:
-                print(no_data_template.format(area1=area[0], area2=area[1]))
+                print(
+                    f'{no_data_template.format(area1=area[0], area2=area[1])}\n'
+                )
         else:
             if df is not None:
                 filepath = save_df_file(
@@ -119,7 +123,7 @@ def fetch_data(
                 )
                 print(f'data stored to file {filepath}\n')
             else:
-                print(no_data_template.format(area1=area))
+                print(f'{no_data_template.format(area1=area)}\n')
 
     def update_if_exists(area):
         if isinstance(area, tuple):
@@ -146,7 +150,7 @@ def fetch_data(
                 fetch_and_save_df(area)
         else:
             filename_start_with_area = get_filename_start_with_areas(
-                data_category, area
+                data_category, area, add_separator=True
             )
             pattern = os.path.join(
                 dir_path, f'{filename_start_with_area}*{DF_FILE_EXTENSION}'
@@ -196,7 +200,7 @@ def fetch_data(
                 'The "area_to" argument cannot be set for fetching load.'
             )
         func = fetch_load
-        area_list = Area.list_bidding_zones()
+        area_list = Area.list_fetchable()
         announcement_template = (
             'fetching load for area {area1} between {start} and {end} ...'
         )
@@ -235,7 +239,19 @@ def fetch_data(
             raise ValueError(
                 'The "area_to" argument cannot be set for fetching physical flows.'
             )
-        area_list = ['FI']
+        area_list = [
+            'EE',
+            'FI',
+            'SE_1',
+            'SE_2',
+            'SE_3',
+            'SE_4',
+            'NO_1',
+            'NO_2',
+            'NO_3',
+            'NO_4',
+            'NO_5',
+        ]
         announcement_template = 'fetching crossborder physical flows for area {area1} between {start} and {end} ...'
         no_data_template = 'no flow data for area {area1}'
     else:
@@ -456,8 +472,11 @@ def fetch_prices(
     area: AreaValue,
     _=None,
 ):
+    # the start date must be moved one day earlier, because the prices are
+    # "day-ahead"
+    start_to_use = start - pd.Timedelta(days=1)
     try:
-        ts = client.query_day_ahead_prices(area, start=start, end=end)
+        ts = client.query_day_ahead_prices(area, start=start_to_use, end=end)
         df = ts.to_frame(name='price')
         df.index.name = 'time'
         df.index = df.index.tz_convert('UTC')
@@ -551,21 +570,21 @@ def fetch_physical_flows(
     _=None,
 ):
     try:
-        df_export = client.query_physical_crossborder_allborders(
+        df_out = client.query_physical_crossborder_allborders(
             area_from, start=start, end=end, export=True, per_hour=True
         )
-        df_export.index.name = 'time'
-        df_export.index = df_export.index.tz_convert('UTC')
-        print(f'fetched export data: {df_export.columns}, {df_export.shape}')
+        df_out.index.name = 'time'
+        df_out.index = df_out.index.tz_convert('UTC')
+        print(f'fetched out going flow data: {df_out.columns}, {df_out.shape}')
 
-        df_import = client.query_physical_crossborder_allborders(
+        df_in = client.query_physical_crossborder_allborders(
             area_from, start=start, end=end, export=False, per_hour=True
         )
-        df_import.index.name = 'time'
-        df_import.index = df_import.index.tz_convert('UTC')
-        print(f'fetched import data: {df_import.columns}, {df_import.shape}')
+        df_in.index.name = 'time'
+        df_in.index = df_in.index.tz_convert('UTC')
+        print(f'fetched in coming flow data: {df_in.columns}, {df_in.shape}')
 
-        return df_export.join(df_import, lsuffix='_export', rsuffix='_import')
+        return df_out.join(df_in, lsuffix='_out', rsuffix='_in')
 
     except NoMatchingDataError:
         print(f'No matching data for physical flows for {area_from}.')
@@ -575,9 +594,11 @@ def update_data(
     data_category: DataCategoryValue | None = None,
     area_from: AreaValue | None = None,
     area_to: AreaValue | None = None,
-    dir_path: str = DATA_DIR,
+    dir_path: str | None = None,
     keep: bool | None = None,
 ):
+    dir_path = dir_path if dir_path is not None else DATA_DIR_ENTSOE
+
     def create_glob_pattern():
         filename_start = get_filename_start(data_category)
         area_from_pattern = (
@@ -616,8 +637,12 @@ def show_dfs(
     end: pd.Timestamp | None = None,
     area_from: AreaValue | None = None,
     area_to: AreaValue | None = None,
-    dir_path: str = DATA_DIR,
+    dir_path: str | None = None,
+    head: int = 5,
+    tail: int = 5,
 ):
+    dir_path = dir_path if dir_path is not None else DATA_DIR_ENTSOE
+
     dfs: List[pd.DataFrame] = []
     try:
         if data_category is not None:
@@ -634,13 +659,15 @@ def show_dfs(
         pass
 
     for df in dfs:
-        show_df(df, start, end)
+        show_df(df, start, end, head, tail)
 
 
 def show_df(
     df: pd.DataFrame,
     start: pd.Timestamp | None = None,
     end: pd.Timestamp | None = None,
+    head: int = 5,
+    tail: int = 5,
 ):
     ident = df.attrs.get('name', f'id={id(df)}')
     print(f'Showing dataframe "{ident}":')
@@ -648,4 +675,4 @@ def show_df(
     if start is not None or end is not None:
         df_to_use = df_to_use.loc[start:end]
 
-    print_df_data(df_to_use)
+    print_df_data(df_to_use, head, tail)

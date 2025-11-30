@@ -1,13 +1,16 @@
 import ast
 from enum import Enum
 import os
+from pathlib import Path
 import re
-from typing import List, Literal, Tuple, TypeAlias
-
+from typing import Dict, List, Literal, Tuple, TypeAlias
 import pandas as pd
+import json
 
 
 DATA_DIR = 'data'
+DATA_DIR_ENTSOE = os.path.join(DATA_DIR, 'entsoe')
+DATA_DIR_FMI = os.path.join(DATA_DIR, 'fmi')
 DATA_DIR_SPECIAL = os.path.join(DATA_DIR, 'special')
 DATA_DIR_ARCHIVED = os.path.join(DATA_DIR_SPECIAL, 'archived')
 DATA_DIR_PREPROCESSED = os.path.join(DATA_DIR, 'preprocessed')
@@ -16,10 +19,35 @@ DF_FILE_EXTENSION = '.pqt'
 
 
 AreaValue: TypeAlias = Literal[
-    'FI', 'SE', 'SE_1', 'SE_3', 'NO', 'NO_4', 'EE', 'RU'
+    'FI',
+    'SE',
+    'SE_1',
+    'SE_2',
+    'SE_3',
+    'SE_4',
+    'NO',
+    'NO_1',
+    'NO_2',
+    'NO_3',
+    'NO_4',
+    'NO_5',
+    'EE',
+    'RU',
 ]
 AreaValueCompact: TypeAlias = Literal[
-    'FI', 'SE', 'SE1', 'SE3', 'NO', 'NO4', 'EE', 'RU'
+    'FI',
+    'SE',
+    'SE1',
+    'SE2',
+    'SE3',
+    'NO',
+    'NO1',
+    'NO2',
+    'NO3',
+    'NO4',
+    'NO5',
+    'EE',
+    'RU',
 ]
 
 
@@ -27,9 +55,15 @@ class Area(Enum):
     FI = 'FI'
     SE = 'SE'
     SE_1 = 'SE_1'
+    SE_2 = 'SE_2'
     SE_3 = 'SE_3'
+    SE_4 = 'SE_4'
     NO = 'NO'
+    NO_1 = 'NO_1'
+    NO_2 = 'NO_2'
+    NO_3 = 'NO_3'
     NO_4 = 'NO_4'
+    NO_5 = 'NO_5'
     NO_TUPLE = 'NO_TUPLE'
     EE = 'EE'
     RU = 'RU'
@@ -59,19 +93,8 @@ class Area(Enum):
             ('SE_3', 'FI'),
             ('FI', 'EE'),
             ('EE', 'FI'),
-        ]
-
-    @classmethod
-    def list_physical_flows(cls) -> list[tuple[str]]:
-        return [
-            ('FI', 'SE_1'),
-            ('SE_1', 'FI'),
-            ('FI', 'SE_3'),
-            ('SE_3', 'FI'),
             ('FI', 'NO_4'),
             ('NO_4', 'FI'),
-            ('FI', 'EE'),
-            ('EE', 'FI'),
             ('FI', 'RU'),
             ('RU', 'FI'),
         ]
@@ -93,10 +116,22 @@ def get_compact_form(area: AreaValue):
         return None
     if area == Area.SE_1.value:
         return 'SE1'
+    elif area == Area.SE_2.value:
+        return 'SE2'
     elif area == Area.SE_3.value:
         return 'SE3'
+    elif area == Area.SE_4.value:
+        return 'SE4'
+    elif area == Area.NO_1.value:
+        return 'NO1'
+    elif area == Area.NO_2.value:
+        return 'NO2'
+    elif area == Area.NO_3.value:
+        return 'NO3'
     elif area == Area.NO_4.value:
         return 'NO4'
+    elif area == Area.NO_5.value:
+        return 'NO5'
     elif Area.is_area_code(area):
         return area
     else:
@@ -106,12 +141,24 @@ def get_compact_form(area: AreaValue):
 def get_area_value_from_compact_form(area: AreaValueCompact):
     if area == 'EE' or area == 'FI' or area == 'SE' or area == 'NO':
         return area
-    elif area == 'NO4':
-        return 'NO_4'
     elif area == 'SE1':
         return 'SE_1'
+    elif area == 'SE2':
+        return 'SE_2'
     elif area == 'SE3':
         return 'SE_3'
+    elif area == 'SE4':
+        return 'SE_4'
+    elif area == 'NO1':
+        return 'NO_1'
+    elif area == 'NO2':
+        return 'NO_2'
+    elif area == 'NO3':
+        return 'NO_3'
+    elif area == 'NO4':
+        return 'NO_4'
+    elif area == 'NO5':
+        return 'NO_5'
     else:
         raise ValueError(f'Unknown compact form area value {area}.')
 
@@ -191,15 +238,27 @@ def get_filename_start_with_areas(
     data_category: DataCategoryValue,
     area_from: AreaValue,
     area_to: AreaValue | None = None,
+    add_separator: bool = False,
 ) -> str:
     if area_from is None and area_to is None:
         return get_filename_start(data_category)
     area_f = get_compact_form(area_from)
     area_t = get_compact_form(area_to)
+
+    filename_start = ''
     if area_to is not None:
-        return f'{get_filename_start(data_category)}_{area_f}-{area_t}'
+        filename_start = (
+            f'{get_filename_start(data_category)}_{area_f}-{area_t}'
+        )
     else:
-        return f'{get_filename_start(data_category)}_{area_f}'
+        filename_start = f'{get_filename_start(data_category)}_{area_f}'
+    if add_separator:
+        if data_category == DataCategory.EXCHANGES.value and area_to is None:
+            filename_start += '-'
+        else:
+            filename_start += '_'
+
+    return filename_start
 
 
 def set_utc(ts: pd.Timestamp) -> pd.Timestamp:
@@ -224,6 +283,8 @@ def write_file(file_path: str, data: bytes, silent: bool = False):
     """
     Writes the bytes to a local file.
     """
+    if len(os.path.dirname(file_path)) > 0:
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
     if len(data) == 0:
         print('No data to write.')
         return
@@ -261,6 +322,14 @@ def write_file_unique_name(path: str, data: bytes, silent: bool = False) -> str:
     file_path = get_unique_path(path)
     write_file(file_path, data, silent)
     return file_path
+
+
+def write_json_file(path: str, data: List[str], silent: bool = False):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+    if not silent:
+        print(f'Data written to {path}')
 
 
 def date_to_str(date: pd.Timestamp) -> str:
@@ -452,6 +521,23 @@ def get_dfs(
     return dfs
 
 
+def cast_df_array_to_dict(dfs: List[pd.DataFrame]) -> Dict[str, pd.DataFrame]:
+    df_dict = {}
+    for df in dfs:
+        name = df.attrs.get('name', None)
+        area = get_areas_from_filename(name + DF_FILE_EXTENSION)[0]
+        df_dict[area] = df
+    return df_dict
+
+
+def get_df_area(df: pd.DataFrame) -> List[AreaValue]:
+    """
+    Returns area codes based on the df filename stored as attrs.name.
+    """
+    name = df.attrs.get('name', None)
+    return get_areas_from_filename(name + DF_FILE_EXTENSION)
+
+
 def check_multi_index(df: pd.DataFrame):
     return {
         'columns': isinstance(df.columns, pd.MultiIndex),
@@ -459,9 +545,10 @@ def check_multi_index(df: pd.DataFrame):
     }
 
 
-def print_df_data(df: pd.DataFrame):
-    print(f'\nhead:\n{df.head()}')
-    print(f'\ntail:\n{df.tail()}')
+def print_df_data(df: pd.DataFrame, head: int = 5, tail: int = 5):
+    print(f'\ndescription:\n{df.describe()}')
+    print(f'\nhead:\n{df.head(head)}')
+    print(f'\ntail:\n{df.tail(tail)}')
     print(f'\ndtypes:\n{df.dtypes}')
     print(f'\nrow[0]:\n{df.iloc[0]}')
     print(f'\nrow[0].sum():\n{df.iloc[0].sum()}')
@@ -490,8 +577,19 @@ def prompt_yes_no(prompt='Continue? (y/n): '):
 
 
 def write_df(df: pd.DataFrame, file_path: str):
-    df.to_parquet(file_path)
+    path = Path(file_path)
+    if not path.suffix == DF_FILE_EXTENSION:
+        path = path.with_suffix(DF_FILE_EXTENSION)
+    df.to_parquet(path)
 
 
 def read_df(file_path: str) -> pd.DataFrame:
-    return pd.read_parquet(file_path)
+    df = pd.read_parquet(file_path)
+
+    # add name attr to the df if there isn't one
+    name = df.attrs.get('name', None)
+    if name is None:
+        base, _ = os.path.splitext(file_path)
+        df.attrs['name'] = f'{base}'
+
+    return df

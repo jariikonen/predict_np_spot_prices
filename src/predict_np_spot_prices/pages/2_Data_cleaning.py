@@ -1,10 +1,12 @@
-from predict_np_spot_prices.pages_common import production_structure_chart
+from predict_np_spot_prices.pages_common import (
+    production_structure_chart_yearly,
+)
 import streamlit as st
 
 from predict_np_spot_prices.eda import (
     get_archived_dfs,
     get_norway_generation_with_tuple_cols,
-    process_to_generation_mix_df,
+    process_to_generation_mix,
 )
 
 st.set_page_config(page_title='Data cleaning', layout='wide')
@@ -40,28 +42,42 @@ st.markdown("""
             which loads the data through [ENTSO-E REST API](https://transparencyplatform.zendesk.com/hc/en-us/articles/15692855254548-Sitemap-for-Restful-API-Integration).
 """)
 
+
+st.subheader('Price data')
+
+st.markdown("""
+    The prices available through ENTSO-E are "day-ahead", meaning that they correspond to the
+            delivery or consumption day (i.e., the day after the trading day in the electricity
+            exchange). To help the machine learning algorithms to learn the correct temporal relationship,
+            I converted the dates to correspond the actual delivery date by moving the days forward by one.
+    
+    The resolution of price data changed to 15 minutes from 1 hour as of October 1. I resampled the
+            resolution of all data to 1 hour.
+""")
+
+
 st.subheader('Generation data')
 
 st.markdown("""
-    First, I wanted to look at the production structure in the areas that were exchanging
-            electricity with Finland. I soon noticed, that Norway's generation data
-            contains peculiarities where one production category has data in multiple
-            columns. For example, for the category "Hydro Pumped Storage" there are three
-            columns: "Hydro Pumped Storage", "('Hydro Pumped Storage', 'Actual Aggregated')"
-            and "('Hydro Pumped Storage', 'Actual Consumption')". The latter two column names
-            seem to be in a Python tuple format. I could not find a clear reason for this
-            from the documentation, so I had to look at the data and figure out how to
+    When creating dataframes for studying the production structure of the different areas, I noticed
+            some peculiarities in the Norwegian generation data, where one production category
+            has data in multiple columns. For example, for the category "Hydro Pumped Storage" there
+            are three columns: "Hydro Pumped Storage", "('Hydro Pumped Storage', 'Actual Aggregated')"
+            and "('Hydro Pumped Storage', 'Actual Consumption')". The latter two column names resemble
+            the result of serializing a Python tuple. I could not find a clear reason for this from the
+            ENTSO-E (or entsoe-py) documentation, so I had to look at the data and figure out how to
             process it.
 
     By looking at the plot of yearly means containing only the columns with the the normal
             names (not the tuple formatted), we can see that the data seems to end after
             year 2024. All means go to zero for year 2025. (*Update November 19: To almost
-            zero.*)
+            zero because the new data comes again to the simply named columns as of November
+            14.*)
 """)
 
 df = get_archived_dfs('generation', 'NO_TUPLE')[0]
-df = process_to_generation_mix_df(df)
-production_structure_chart('NO', df)
+df = process_to_generation_mix(df)
+production_structure_chart_yearly('NO - Norway', df)
 
 st.markdown("""
     If we look at the plots of simply named columns against the "Actual Aggregated" tuple
@@ -112,5 +128,6 @@ st.markdown("""
             simply named columns as of November 14. Therefore, I have modified the preprocessing to merge
             the tuple named columns into the simply named columns using `pd.DataFrame.combine_first`
             method and not just by a simple cutoff date. I have also noticed that also Finnish
-            generation data sometimes has these tuple columns.
+            generation data sometimes has these tuple columns. Therefore, I check all generation
+            datasets for tuple-like names.
 """)
